@@ -9,7 +9,7 @@ import { tmpdir } from 'os'
 export const runtime = 'nodejs'
 
 // 通过 ffmpeg 从视频中提取第 1 秒的一帧作为缩略图
-async function extractThumbnail(videoBuffer: Buffer, safeName: string, ts: number): Promise<string | null> {
+async function extractThumbnail(videoBuffer: Buffer, safeName: string, ts: number): Promise<Buffer | null> {
   return new Promise((resolve) => {
     const inputPath = join(tmpdir(), `ps_in_${ts}.mp4`)
     const outputPath = join(tmpdir(), `ps_thumb_${ts}.jpg`)
@@ -20,25 +20,73 @@ async function extractThumbnail(videoBuffer: Buffer, safeName: string, ts: numbe
       const ffmpeg = spawn('ffmpeg', [
         '-y',
         '-i', inputPath,
-        '-ss', '00:00:01',         // 跳到第 1 秒抽帧（视频开头通常是黑帧）
+        '-ss', '00:00:01',         // 跳到第 1 秒抽帧
         '-vframes', '1',           // 只抽 1 帧
-        '-q:v', '2',               // 质量等级 2（高质量）
+        '-q:v', '2',               // 质量等级 2
         '-f', 'image2',
         outputPath,
       ])
 
       ffmpeg.on('close', (code) => {
-        try {
-          unlinkSync(inputPath) // 清理输入文件
-        } catch (_) {}
+        try { unlinkSync(inputPath) } catch (_) {}
 
         if (code === 0) {
-          // 读取生成的 jpg，转成 Buffer 上传到 OSS
           try {
             const { readFileSync } = require('fs')
             const thumbBuffer = readFileSync(outputPath)
-            unlinkSync(outputPath) // 清理输出文件
+            unlinkSync(outputPath)
             resolve(thumbBuffer)
+          } catch (_) {
+            resolve(null)
+          }
+        } else {
+          try { unlinkSync(outputPath) } catch (_) {}
+          resolve(null)
+        }
+      })
+
+      ffmpeg.on('error', () => {
+        try { unlinkSync(inputPath) } catch (_) {}
+        try { unlinkSync(outputPath) } catch (_) {}
+        resolve(null)
+      })
+    } catch (_) {
+      resolve(null)
+    }
+  })
+}
+
+// 通过 ffmpeg 提取前10秒预览片段
+async function extractPreview(videoBuffer: Buffer, safeName: string, ts: number): Promise<Buffer | null> {
+  return new Promise((resolve) => {
+    const inputPath = join(tmpdir(), `ps_prev_in_${ts}.mp4`)
+    const outputPath = join(tmpdir(), `ps_preview_${ts}.mp4`)
+
+    try {
+      writeFileSync(inputPath, videoBuffer)
+
+      const ffmpeg = spawn('ffmpeg', [
+        '-y',
+        '-i', inputPath,
+        '-t', '10',                // 只取前10秒
+        '-c:v', 'libx264',         // H.264编码
+        '-b:v', '1M',              // 1Mbps码率
+        '-s', '1280x720',          // 720p分辨率
+        '-preset', 'fast',
+        '-movflags', '+faststart', // 优化网络播放
+        '-an',                     // 去掉音频（预览不需要声音）
+        outputPath,
+      ])
+
+      ffmpeg.on('close', (code) => {
+        try { unlinkSync(inputPath) } catch (_) {}
+
+        if (code === 0) {
+          try {
+            const { readFileSync } = require('fs')
+            const previewBuffer = readFileSync(outputPath)
+            unlinkSync(outputPath)
+            resolve(previewBuffer)
           } catch (_) {
             resolve(null)
           }
@@ -91,7 +139,17 @@ export async function POST(req: NextRequest) {
     if (thumbBuffer) {
       const thumbPath = `thumbnails/${ts}_${safeName}.jpg`
       try {
-        thumbnailUrl = await uploadFile(thumbBuffer as unknown as Buffer, thumbPath, 'image/jpeg')
+        thumbnailUrl = await uploadFile(thumbBuffer, thumbPath, 'image/jpeg')
+      } catch (_) {}
+    }
+
+    // 自动生成10秒预览片段
+    let previewUrl: string | null = null
+    const previewBuffer = await extractPreview(videoBuffer, safeName, ts)
+    if (previewBuffer) {
+      const previewPath = `previews/${ts}_${safeName}.mp4`
+      try {
+        previewUrl = await uploadFile(previewBuffer, previewPath, 'video/mp4')
       } catch (_) {}
     }
 
@@ -102,6 +160,7 @@ export async function POST(req: NextRequest) {
         name: name || file.name,
         file_url: fileUrl,        // 完整 OSS 公开 URL
         thumbnail_url: thumbnailUrl, // 自动抽帧的缩略图 URL
+        preview_url: previewUrl,  // 10秒预览片段 URL
         cost_points,
         downloads_left: downloads_left ? parseInt(downloads_left) : null,
         delete_after_download,

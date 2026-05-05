@@ -10,6 +10,22 @@ export async function GET(
 ) {
   const id = params.id
   const isDownload = new URL(req.url).searchParams.get('download') === '1'
+  const userId = req.headers.get('x-user-id')
+
+  // ── 鉴权：必须登录 ──
+  if (!userId) {
+    return NextResponse.json({ error: '请先登录' }, { status: 401 })
+  }
+
+  const { data: user, error: userErr } = await supabaseAdmin
+    .from('users')
+    .select('id, points')
+    .eq('id', userId)
+    .single()
+
+  if (userErr || !user) {
+    return NextResponse.json({ error: '用户不存在' }, { status: 401 })
+  }
 
   try {
     // 1. 查素材
@@ -22,6 +38,9 @@ export async function GET(
     if (matErr || !mat) {
       return NextResponse.json({ error: '素材不存在' }, { status: 404 })
     }
+
+    // ── 下载鉴权已由 /api/download 处理，stream 仅验证登录 ──
+    // 预览模式：登录即可看；下载模式：/api/download 已扣积分
 
     // 2. 从 file_url 提取 OSS 路径（OSS 公开链接格式: https://bucket.region.aliyuncs.com/materials/xxx）
     const fileUrl: string = mat.file_url

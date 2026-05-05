@@ -1,0 +1,19 @@
+/* Mobile hover adaptation - only apply hover effects on devices that support hover */
+@media (hover: hover) and (pointer: fine) {
+  .materialThumb:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  }
+
+  .overlayCloseBtn:hover {
+    background: rgba(239, 68, 68, 0.7) !important;
+  }
+}
+
+/* Touch devices - disable tap highlight and improve touch targets */
+@media (hover: none), (pointer: coarse) {
+  .materialThumb {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+}

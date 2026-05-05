@@ -4,8 +4,16 @@ import { createHash } from 'crypto'
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!)
 
+// 关闭开放注册，仅管理员可添加用户
+const ALLOW_REGISTRATION = process.env.ALLOW_REGISTRATION === 'true'
+
 export async function POST(req: NextRequest) {
   try {
+    // 检查是否允许注册
+    if (!ALLOW_REGISTRATION) {
+      return NextResponse.json({ error: '已关闭开放注册，请联系管理员' }, { status: 403 })
+    }
+
     const { username, password } = await req.json()
     
     if (!username || username.length < 3) {

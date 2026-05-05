@@ -1,9 +1,11 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import styles from './login.module.css'
 
+// 关闭开放注册，仅保留登录功能
+const ALLOW_REGISTRATION = true
 type Tab = 'login' | 'register'
 
 export default function LoginPage() {
@@ -16,6 +18,14 @@ export default function LoginPage() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [showPwd, setShowPwd] = useState(false)
+  const [remember, setRemember] = useState(false)
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => {
+    const saved = localStorage.getItem('ps_last_username') || ''
+    if (saved) { setUsername(saved); setRemember(true) }
+    setMounted(true)
+  }, [])
 
   function switchTab(t: Tab) {
     setTab(t)
@@ -70,6 +80,7 @@ export default function LoginPage() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || '登录失败')
       localStorage.setItem('ps_user', JSON.stringify(data.user))
+      if (remember) { localStorage.setItem('ps_last_username', username.trim()) } else { localStorage.removeItem('ps_last_username') }
       router.push('/')
     } catch (e: any) {
       setError(e.message)
@@ -104,12 +115,14 @@ export default function LoginPage() {
           >
             登录
           </button>
-          <button
-            className={`${styles.tabBtn} ${tab === 'register' ? styles.tabBtnActive : ''}`}
-            onClick={() => switchTab('register')}
-          >
-            注册
-          </button>
+          {ALLOW_REGISTRATION && (
+            <button
+              className={`${styles.tabBtn} ${tab === 'register' ? styles.tabBtnActive : ''}`}
+              onClick={() => switchTab('register')}
+            >
+              注册
+            </button>
+          )}
         </div>
 
         <div className={styles.field}>
@@ -181,6 +194,12 @@ export default function LoginPage() {
           </div>
         )}
 
+                {tab === 'login' && mounted && (
+          <label className={styles.rememberLabel}>
+            <input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />
+            <span>记住我</span>
+          </label>
+        )}
         <button
           className={`${styles.submitBtn} ${loading ? styles.submitBtnLoading : ''}`}
           onClick={tab === 'login' ? handleLogin : handleRegister}

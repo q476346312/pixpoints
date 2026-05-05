@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { Zap, User, LogOut } from 'lucide-react'
 
 interface NavBarProps {
-  user: { email: string; points: number }
+  user: { username?: string; email?: string; points: number }
   onLogout: () => void
 }
 
@@ -71,7 +71,7 @@ export default function NavBar({ user, onLogout }: NavBarProps) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <User size={14} color="#64748b" />
             <span style={{ fontSize: 13, color: '#94a3b8', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {user.email}
+              {(user.username || user.email || '')}
             </span>
           </div>
 

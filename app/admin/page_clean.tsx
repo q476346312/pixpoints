@@ -221,8 +221,7 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(false)
 
   // Upload state
-  const [uploadProgress, setUploadProgress] = useState(0)
-    const [uploading, setUploading] = useState(false)
+  const [uploading, setUploading] = useState(false)
   const [uploadName, setUploadName] = useState('')
   const [uploadPoints, setUploadPoints] = useState('100')
   const [uploadDownloads, setUploadDownloads] = useState('')
@@ -232,7 +231,7 @@ export default function AdminPage() {
 
   // Batch upload state
   const [batchFiles, setBatchFiles] = useState<File[]>([])
-  const [batchQueue, setBatchQueue] = useState<{ file: File; status: 'pending' | 'uploading' | 'done' | 'error'; progress: number; msg?: string }[]>([])
+  const [batchQueue, setBatchQueue] = useState<{ file: File; status: 'pending' | 'uploading' | 'done' | 'error'; msg?: string }[]>([])
   const [batchUploading, setBatchUploading] = useState(false)
 
   // User search
@@ -274,57 +273,25 @@ export default function AdminPage() {
     })
   }
 
-    function doUploadOneXhr(file: File, name: string, onProgress: (pct: number) => void): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest()
-      const ticks: number[] = [15, 35, 55, 72, 85, 93, 97]
-      let tickIdx = 0
-      let timer: ReturnType<typeof setTimeout> | null = null
-      const scheduleTick = () => {
-        if (tickIdx >= ticks.length) return
-        onProgress(ticks[tickIdx++])
-        const delay = tickIdx < 4 ? 1200 : tickIdx < 6 ? 2500 : 4500
-        timer = setTimeout(scheduleTick, delay)
-      }
-      const MB = 1024 * 1024
-      if (file.size < 5 * MB) { onProgress(20); timer = setTimeout(scheduleTick, 800) }
-      else { timer = setTimeout(scheduleTick, 1500) }
-      xhr.upload.addEventListener('progress', e => {
-        if (e.lengthComputable && e.total > 0) {
-          if (timer) { clearTimeout(timer); timer = null }
-          tickIdx = ticks.length
-          onProgress(Math.round((e.loaded / e.total) * 97))
-        }
-      })
-      xhr.addEventListener('load', () => {
-        if (timer) { clearTimeout(timer); timer = null }
-        if (xhr.status >= 200 && xhr.status < 300) {
-          onProgress(100)
-          try { JSON.parse(xhr.responseText) } catch { /* ok */ }
-          resolve()
-        } else {
-          try { reject(new Error(JSON.parse(xhr.responseText).error || 'upload failed')) } catch { reject(new Error('upload failed')) }
-        }
-      })
-      xhr.addEventListener('error', () => { if (timer) { clearTimeout(timer); timer = null }; reject(new Error('network error')) })
-      const fd = new FormData()
-      fd.append('file', file)
-      fd.append('name', name)
-      fd.append('cost_points', uploadPoints)
-      fd.append('delete_after_download', String(deleteAfterDownload))
-      if (uploadDownloads) fd.append('downloads_left', uploadDownloads)
-      xhr.open('POST', '/api/upload')
-      xhr.send(fd)
-    })
+  async function doUploadOne(file: File, name: string) {
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('name', name)
+    fd.append('cost_points', uploadPoints)
+    fd.append('delete_after_download', String(deleteAfterDownload))
+    if (uploadDownloads) fd.append('downloads_left', uploadDownloads)
+    const res = await fetch('/api/upload', { method: 'POST', body: fd })
+    const json = await res.json()
+    if (!res.ok) throw new Error(json.error || '上传失败')
   }
-async function handleUpload() {
+
+  async function handleUpload() {
     if (!file) return alert('请选择文件')
     if (!uploadName.trim()) return alert('请填写素材名称')
     if (!uploadPoints) return alert('请填写积分价格')
     setUploading(true)
-    setUploadProgress(0)
     try {
-      await doUploadOneXhr(file, uploadName.trim(), p => setUploadProgress(p))
+      await doUploadOne(file, uploadName.trim())
       setUploadName(''); setUploadPoints('100'); setUploadDownloads(''); setDeleteAfterDownload(false)
       setFile(null)
       if (fileRef.current) fileRef.current.value = ''
@@ -348,7 +315,7 @@ async function handleUpload() {
       return true
     })
     setBatchFiles(valid)
-    setBatchQueue(valid.map(f => ({ file: f, status: 'pending' as const, progress: 0 })))
+    setBatchQueue(valid.map(f => ({ file: f, status: 'pending' as const })))
     if (e.target) e.target.value = ''
   }
 
@@ -357,13 +324,11 @@ async function handleUpload() {
     setBatchUploading(true)
     const queue = [...batchQueue]
     for (let i = 0; i < queue.length; i++) {
-      queue[i] = { ...queue[i], status: 'uploading', progress: 0 }
+      queue[i] = { ...queue[i], status: 'uploading' }
       setBatchQueue([...queue])
       try {
-        await doUploadOneXhr(queue[i].file, queue[i].file.name.replace(/\.[^.]+$/, ''), p => {
-          setBatchQueue(prev => prev.map((q, j) => j === i ? { ...q, progress: p } : q))
-        })
-        queue[i] = { ...queue[i], status: 'done', progress: 100 }
+        await doUploadOne(queue[i].file, queue[i].file.name.replace(/\.[^.]+$/, ''))
+        queue[i] = { ...queue[i], status: 'done' }
       } catch (e: any) {
         queue[i] = { ...queue[i], status: 'error', msg: e.message }
       }
@@ -524,17 +489,7 @@ async function handleUpload() {
                   disabled={uploading}
                 >
                   {uploading
-                    ? <>
-                      <div style={{ width: '100%', marginBottom: 8 }}>
-                        <div style={{ height: 6, background: 'rgba(255,255,255,0.1)', borderRadius: 3, overflow: 'hidden' }}>
-                          <div style={{ height: '100%', width: `${uploadProgress}%`, background: 'linear-gradient(90deg, #3b82f6, #60a5fa)', borderRadius: 3, transition: 'width 0.3s ease' }} />
-                        </div>
-                        <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', marginTop: 4, textAlign: 'center' }}>
-                          {uploadProgress < 100 ? `上传中 ${uploadProgress}%` : '处理中...'}
-                        </div>
-                      </div>
-                      <RefreshCw size={14} className={styles.spinning} />
-                    </>
+                    ? <><RefreshCw size={14} className={styles.spinning} /> 上传中...</>
                     : <><Upload size={14} /> 上传</>}
                 </button>
                 {file && <span className={styles.fileName}>{file.name} ({(file.size/1024/1024).toFixed(1)}MB)</span>}

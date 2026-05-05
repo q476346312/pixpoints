@@ -2,8 +2,9 @@
 
 import { useState, useEffect } from 'react'
 import { createClient } from '@supabase/supabase-js'
-import { Download, Zap, Star, LogOut, Play, X } from 'lucide-react'
+import { Download, Zap, Star, LogOut, Play, X, Search, ChevronLeft, ChevronRight, CheckCircle } from 'lucide-react'
 import NavBar from '@/components/NavBar'
+import styles from './page.module.css'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -15,6 +16,7 @@ interface Material {
   name: string
   file_url: string
   thumbnail_url: string | null
+  preview_url: string | null  // 10秒预览片段
   cost_points: number
   downloads_left: number | null
   delete_after_download: boolean
@@ -25,7 +27,8 @@ interface Material {
 
 interface User {
   id: string
-  email: string
+  username?: string
+  email?: string
   points: number
 }
 
@@ -35,6 +38,11 @@ export default function HomePage() {
   const [loading, setLoading] = useState(true)
   const [downloadingId, setDownloadingId] = useState<string | null>(null)
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null)
+
+  // 搜索 + 分页
+  const [searchQuery, setSearchQuery] = useState('')
+  const [currentPage, setCurrentPage] = useState(1)
+  const ITEMS_PER_PAGE = 12
 
   // 视频预览相关
   const [blobUrls, setBlobUrls] = useState<Record<string, string>>({})
@@ -94,8 +102,13 @@ export default function HomePage() {
   async function loadBlob(materialId: string): Promise<string | null> {
     if (blobUrls[materialId]) return blobUrls[materialId]
     try {
-      const res = await fetch(`/api/stream/${materialId}`)
-      if (!res.ok) throw new Error('获取视频失败')
+      const res = await fetch(`/api/stream/${materialId}`, {
+        headers: { 'x-user-id': user?.id || '' },
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || '获取视频失败')
+      }
       const blob = await res.blob()
       const url = URL.createObjectURL(blob)
       setBlobUrls(prev => ({ ...prev, [materialId]: url }))
@@ -106,13 +119,13 @@ export default function HomePage() {
     }
   }
 
-  // 点击播放：先显示加载动画，加载完直接打开全屏
-  async function handlePlay(mat: Material) {
-    if (loadingId === mat.id) return // 已在加载中
-    setLoadingId(mat.id)
-    const url = await loadBlob(mat.id)
-    setLoadingId(null)
-    if (url) setExpandedId(mat.id)
+  // 点击播放：直接打开全屏，用 preview_url（10秒片段）
+  function handlePlay(mat: Material) {
+    if (!mat.preview_url) {
+      showToast('该素材暂无预览', 'error')
+      return
+    }
+    setExpandedId(mat.id)
   }
 
   function handleCloseExpanded() {
@@ -121,66 +134,26 @@ export default function HomePage() {
 
   async function handleDownload(mat: Material) {
     if (!user) return
-    
-    // 检查是否已购买（不限次下载且已在购买列表中）
-    const hasPurchased = mat.purchased_users?.includes(user.id)
-    const needPay = !hasPurchased || mat.downloads_left !== null
-    
-    if (needPay && mat.cost_points > user.points) {
-      showToast('积分不足，请先充值', 'error')
-      return
-    }
-    if (mat.downloads_left !== null && mat.downloads_left <= 0) {
-      showToast('素材已售罄', 'error')
-      return
-    }
     setDownloadingId(mat.id)
 
     try {
-      // 只有需要付费时才扣积分
-      if (needPay) {
-        const { error: pointsErr } = await supabase.rpc('deduct_points', {
-          p_user_id: user.id,
-          p_points: Number(mat.cost_points),
-        })
-        if (pointsErr) throw pointsErr
-      }
+      // 后端原子化处理：鉴权 → 扣积分 → 删文件 → 更新数据库
+      const payRes = await fetch('/api/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ materialId: mat.id, userId: user.id }),
+      })
+      const payData = await payRes.json()
+      if (!payRes.ok) throw new Error(payData.error || '下载失败')
 
-      // 构建更新数据
-      const updateData: any = {}
-      
-      // 如果不限次且未购买，添加到已购买列表
-      if (mat.downloads_left === null && !hasPurchased) {
-        updateData.purchased_users = [...(mat.purchased_users || []), user.id]
+      // 扣费成功，拉取文件
+      const res = await fetch(`/api/stream/${mat.id}?download=1`, {
+        headers: { 'x-user-id': user.id },
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || '获取文件失败')
       }
-      
-      // 如果限次，减少次数
-      let newLeft = mat.downloads_left
-      if (mat.downloads_left !== null) {
-        newLeft = mat.downloads_left - 1
-        updateData.downloads_left = newLeft
-      }
-      
-      // 如果下载后删除或次数用完，标记删除
-      const shouldDelete = mat.delete_after_download || (newLeft !== null && newLeft <= 0)
-      if (shouldDelete) {
-        updateData.downloads_left = 0
-        try {
-          await fetch('/api/materials/delete-file', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ file_url: mat.file_url }),
-          })
-        } catch (_) {}
-      }
-      
-      // 执行更新
-      if (Object.keys(updateData).length > 0) {
-        await supabase.from('materials').update(updateData).eq('id', mat.id)
-      }
-
-      const res = await fetch(`/api/stream/${mat.id}?download=1`)
-      if (!res.ok) throw new Error('下载失败，请重试')
 
       const blob = await res.blob()
       const blobUrl = URL.createObjectURL(blob)
@@ -192,23 +165,28 @@ export default function HomePage() {
       document.body.removeChild(a)
       setTimeout(() => URL.revokeObjectURL(blobUrl), 5000)
 
-      // 更新前端状态
-      if (needPay) {
-        setUser(prev => prev ? { ...prev, points: prev.points - mat.cost_points } : null)
-      }
-      
-      // 如果删除后不再显示，从列表移除
-      if (shouldDelete) {
+      // 更新前端积分（用后端返回的权威值）
+      setUser(prev => prev ? { ...prev, points: payData.remainingPoints } : null)
+      localStorage.setItem('ps_user', JSON.stringify({ ...user, points: payData.remainingPoints }))
+
+      // 更新素材列表
+      if (payData.shouldDelete) {
         setMaterials(prev => prev.filter(m => m.id !== mat.id))
       } else {
-        setMaterials(prev => prev.map(m =>
-          m.id === mat.id
-            ? { ...m, ...updateData }
-            : m
-        ))
+        setMaterials(prev => prev.map(m => {
+          if (m.id !== mat.id) return m
+          const updated = { ...m }
+          if (!mat.purchased_users?.includes(user.id) && mat.downloads_left === null) {
+            updated.purchased_users = [...(m.purchased_users || []), user.id]
+          }
+          if (m.downloads_left !== null) {
+            updated.downloads_left = m.downloads_left - 1
+          }
+          return updated
+        }))
       }
 
-      const payMsg = needPay ? `-${mat.cost_points}积分` : '已购买，免费下载'
+      const payMsg = payData.needPay ? `-${payData.pointsDeducted}积分` : '已购买，免费下载'
       showToast(`下载成功！${payMsg}`, 'success')
     } catch (e: any) {
       showToast(e.message || '下载失败', 'error')
@@ -221,6 +199,16 @@ export default function HomePage() {
     setToast({ msg, type })
     setTimeout(() => setToast(null), 3000)
   }
+
+  // 过滤 + 分页逻辑
+  const filteredMaterials = materials.filter(m =>
+    m.name.toLowerCase().includes(searchQuery.toLowerCase())
+  )
+  const totalPages = Math.ceil(filteredMaterials.length / ITEMS_PER_PAGE)
+  const paginatedMaterials = filteredMaterials.slice(
+    (currentPage - 1) * ITEMS_PER_PAGE,
+    currentPage * ITEMS_PER_PAGE
+  )
 
   // ─── 全屏模态框 ───
   const expandedMat = expandedId ? materials.find(m => m.id === expandedId) : null
@@ -247,40 +235,83 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* Stats */}
+      {/* Stats + Search */}
       <div style={{ maxWidth: 1200, margin: '0 auto', padding: '0 24px 32px', position: 'relative', zIndex: 1 }}>
-        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-          {[
-            { icon: <Zap size={16}/>, label: '当前积分', value: user.points.toLocaleString() },
-            { icon: <Star size={16}/>, label: '素材总数', value: materials.length },
-          ].map(stat => (
-            <div key={stat.label} className="glass-card" style={{ padding: '16px 24px', borderRadius: 12, display: 'flex', alignItems: 'center', gap: 12, minWidth: 160 }}>
-              <div style={{ color: '#6366f1' }}>{stat.icon}</div>
-              <div>
-                <div style={{ fontSize: 12, color: '#94a3b8' }}>{stat.label}</div>
-                <div style={{ fontSize: 20, fontWeight: 700, color: '#e2e8f0' }}>{stat.value}</div>
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+            {[
+              { icon: <Zap size={16}/>, label: '当前积分', value: user.points.toLocaleString() },
+              { icon: <Star size={16}/>, label: '素材总数', value: materials.length },
+            ].map(stat => (
+              <div key={stat.label} className="glass-card" style={{ padding: '16px 24px', borderRadius: 12, display: 'flex', alignItems: 'center', gap: 12, minWidth: 160 }}>
+                <div style={{ color: '#6366f1' }}>{stat.icon}</div>
+                <div>
+                  <div style={{ fontSize: 12, color: '#94a3b8' }}>{stat.label}</div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: '#e2e8f0' }}>{stat.value}</div>
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
+
+          {/* Search */}
+          <div className="glass-card" style={{ padding: '10px 16px', borderRadius: 12, display: 'flex', alignItems: 'center', gap: 10, minWidth: 280 }}>
+            <Search size={18} color="#64748b" />
+            <input
+              type="text"
+              placeholder="搜索素材..."
+              value={searchQuery}
+              onChange={(e) => {
+                setSearchQuery(e.target.value)
+                setCurrentPage(1) // 重置到第一页
+              }}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                outline: 'none',
+                color: '#e2e8f0',
+                fontSize: 14,
+                width: '100%',
+              }}
+            />
+            {searchQuery && (
+              <button
+                onClick={() => { setSearchQuery(''); setCurrentPage(1) }}
+                style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: 12 }}
+              >
+                清除
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
       {/* Materials Grid */}
       <main style={{ maxWidth: 1200, margin: '0 auto', padding: '0 24px 80px', position: 'relative', zIndex: 1 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 20 }}>可用素材</h2>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 600 }}>可用素材</h2>
+          {searchQuery && (
+            <span style={{ fontSize: 13, color: '#64748b' }}>
+              找到 {filteredMaterials.length} 个结果
+            </span>
+          )}
+        </div>
 
         {loading ? (
           <div style={{ display: 'flex', justifyContent: 'center', padding: 60 }}>
             <div className="spinner" />
           </div>
-        ) : materials.length === 0 ? (
+        ) : filteredMaterials.length === 0 ? (
           <div className="glass-card" style={{ padding: 60, textAlign: 'center', borderRadius: 16 }}>
-            <p style={{ color: '#94a3b8' }}>暂无素材，管理员上传后即可见</p>
+            <p style={{ color: '#94a3b8' }}>
+              {searchQuery ? '未找到匹配的素材' : '暂无素材，管理员上传后即可见'}
+            </p>
           </div>
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 20 }}>
-            {materials.map((mat, i) => {
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 20 }}>
+              {paginatedMaterials.map((mat, i) => {
               const isLoading = loadingId === mat.id
+              const hasPurchased = user && mat.purchased_users?.includes(user.id)
 
               return (
                 <div
@@ -293,11 +324,9 @@ export default function HomePage() {
                     opacity: 0,
                     transition: 'transform 0.2s',
                   }}
-                  onMouseEnter={e => (e.currentTarget.style.transform = 'translateY(-4px)')}
-                  onMouseLeave={e => (e.currentTarget.style.transform = 'translateY(0)')}
                 >
                   {/* 预览区域：缩略图 + 播放按钮 或 加载动画 */}
-                  <div style={{ height: 160, background: 'linear-gradient(135deg, #1a1a2e, #2a2a3e)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', position: 'relative' }}>
+                  <div className={styles.materialThumb} style={{ height: 160, background: 'linear-gradient(135deg, #1a1a2e, #2a2a3e)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', position: 'relative' }}>
 
                     {/* 正在加载：显示 spinner，替代播放按钮 */}
                     {isLoading ? (
@@ -350,22 +379,42 @@ export default function HomePage() {
                         {mat.downloads_left !== null ? `剩余 ${mat.downloads_left} 次` : '不限次数'}
                       </div>
                     </div>
+                    {/* 已购买标签 */}
+                    {hasPurchased && (
+                      <div style={{
+                        marginTop: 10,
+                        padding: '4px 10px',
+                        background: 'rgba(34,197,94,0.15)',
+                        borderRadius: 6,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        fontSize: 12,
+                        color: '#22c55e',
+                        fontWeight: 500,
+                      }}>
+                        <CheckCircle size={12} />
+                        已购买 · 免费下载
+                      </div>
+                    )}
                     <button
                       onClick={() => handleDownload(mat)}
-                      disabled={downloadingId === mat.id || mat.cost_points > user.points}
+                      disabled={downloadingId === mat.id || (!hasPurchased && mat.cost_points > user.points)}
                       style={{
                         marginTop: 12,
                         width: '100%',
                         padding: '10px',
                         borderRadius: 10,
                         border: 'none',
-                        background: mat.cost_points > user.points
-                          ? 'rgba(239,68,68,0.1)'
-                          : 'linear-gradient(135deg, #6366f1, #8b5cf6)',
-                        color: mat.cost_points > user.points ? '#ef4444' : 'white',
+                        background: hasPurchased
+                          ? 'linear-gradient(135deg, #22c55e, #16a34a)'
+                          : mat.cost_points > user.points
+                            ? 'rgba(239,68,68,0.1)'
+                            : 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                        color: 'white',
                         fontWeight: 600,
                         fontSize: 14,
-                        cursor: mat.cost_points > user.points ? 'not-allowed' : 'pointer',
+                        cursor: (!hasPurchased && mat.cost_points > user.points) ? 'not-allowed' : 'pointer',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
@@ -375,6 +424,11 @@ export default function HomePage() {
                     >
                       {downloadingId === mat.id ? (
                         <div className="spinner-sm" />
+                      ) : hasPurchased ? (
+                        <>
+                          <Download size={14} />
+                          再次下载
+                        </>
                       ) : (
                         <>
                           <Download size={14} />
@@ -386,7 +440,71 @@ export default function HomePage() {
                 </div>
               )
             })}
-          </div>
+            </div>
+
+            {/* Pagination */}
+            {totalPages > 1 && (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 40 }}>
+                <button
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  style={{
+                    padding: '8px 12px',
+                    borderRadius: 8,
+                    border: '1px solid rgba(99,102,241,0.3)',
+                    background: currentPage === 1 ? 'rgba(99,102,241,0.05)' : 'rgba(99,102,241,0.1)',
+                    color: currentPage === 1 ? '#64748b' : '#e2e8f0',
+                    cursor: currentPage === 1 ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                  }}
+                >
+                  <ChevronLeft size={16} />
+                </button>
+
+                {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
+                  <button
+                    key={page}
+                    onClick={() => setCurrentPage(page)}
+                    style={{
+                      padding: '8px 14px',
+                      borderRadius: 8,
+                      border: '1px solid rgba(99,102,241,0.3)',
+                      background: currentPage === page ? '#6366f1' : 'rgba(99,102,241,0.1)',
+                      color: currentPage === page ? 'white' : '#e2e8f0',
+                      cursor: 'pointer',
+                      fontSize: 14,
+                      fontWeight: 500,
+                      minWidth: 36,
+                    }}
+                  >
+                    {page}
+                  </button>
+                ))}
+
+                <button
+                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  style={{
+                    padding: '8px 12px',
+                    borderRadius: 8,
+                    border: '1px solid rgba(99,102,241,0.3)',
+                    background: currentPage === totalPages ? 'rgba(99,102,241,0.05)' : 'rgba(99,102,241,0.1)',
+                    color: currentPage === totalPages ? '#64748b' : '#e2e8f0',
+                    cursor: currentPage === totalPages ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                  }}
+                >
+                  <ChevronRight size={16} />
+                </button>
+
+                <span style={{ marginLeft: 12, fontSize: 13, color: '#64748b' }}>
+                  第 {currentPage} / {totalPages} 页
+                </span>
+              </div>
+            )}
+          </>
         )}
       </main>
 
@@ -418,6 +536,7 @@ export default function HomePage() {
               {expandedMat.name}
             </div>
             <button
+              className={styles.overlayCloseBtn}
               onClick={handleCloseExpanded}
               style={{
                 width: 36, height: 36, borderRadius: '50%',
@@ -426,18 +545,16 @@ export default function HomePage() {
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 transition: 'background 0.2s',
               }}
-              onMouseEnter={e => (e.currentTarget.style.background = 'rgba(239,68,68,0.7)')}
-              onMouseLeave={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.1)')}
             >
               <X size={18} />
             </button>
           </div>
 
-          {/* 视频 */}
+          {/* 视频预览（用 preview_url，10秒片段） */}
           <div style={{ width: '100%', maxWidth: 1000, padding: '60px 24px 24px' }}>
             {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
             <video
-              src={blobUrls[expandedId] || ''}
+              src={expandedMat.preview_url || ''}
               controls
               controlsList="nodownload noremoteplayback"
               playsInline
