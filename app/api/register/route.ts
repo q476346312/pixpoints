@@ -7,8 +7,8 @@ const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env
 // 动态读取环境变量，避免 build 时固化
 export async function POST(req: NextRequest) {
   try {
-    // 每次请求动态读取，修改 env 后无需重新 build
-    const allowRegistration = process.env.ALLOW_REGISTRATION === 'true'
+    // 开放注册，如需关闭改为 false
+    const allowRegistration = true
     if (!allowRegistration) {
       return NextResponse.json({ error: '已关闭开放注册，请联系管理员' }, { status: 403 })
     }
